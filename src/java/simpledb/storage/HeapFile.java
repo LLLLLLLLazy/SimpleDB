@@ -112,17 +112,48 @@ public class HeapFile implements DbFile {
     // see DbFile.java for javadocs
     public List<Page> insertTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+        ArrayList<Page> modifiedPages = new ArrayList<>();
+
+        for (int i = 0; i < numPages(); i++) {
+            HeapPageId pid = new HeapPageId(getId(), i);
+            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+            if (page.getNumEmptySlots() > 0) {
+                page.insertTuple(t);
+                modifiedPages.add(page);
+                return modifiedPages;
+            }
+        }
+
+        synchronized (this) {
+            try (BufferedOutputStream bw = new BufferedOutputStream(new FileOutputStream(file, true))) {
+                bw.write(HeapPage.createEmptyPageData());
+            }
+        }
+
+        HeapPageId newPid = new HeapPageId(getId(), numPages() - 1);
+        HeapPage newPage = (HeapPage) Database.getBufferPool().getPage(tid, newPid, Permissions.READ_WRITE);
+        newPage.insertTuple(t);
+        modifiedPages.add(newPage);
+        return modifiedPages;
     }
 
     // see DbFile.java for javadocs
     public ArrayList<Page> deleteTuple(TransactionId tid, Tuple t) throws DbException,
             TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+        if (t == null || t.getRecordId() == null) {
+            throw new DbException("tuple has no record id");
+        }
+
+        HeapPageId pid = (HeapPageId) t.getRecordId().getPageId();
+        if (pid.getTableId() != getId()) {
+            throw new DbException("tuple is not in this heap file");
+        }
+
+        HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+        page.deleteTuple(t);
+        ArrayList<Page> modifiedPages = new ArrayList<>();
+        modifiedPages.add(page);
+        return modifiedPages;
     }
 
     // see DbFile.java for javadocs

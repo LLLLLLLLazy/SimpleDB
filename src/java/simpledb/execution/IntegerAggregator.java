@@ -1,7 +1,16 @@
 package simpledb.execution;
 
 import simpledb.common.Type;
+import simpledb.storage.Field;
+import simpledb.storage.IntField;
 import simpledb.storage.Tuple;
+import simpledb.storage.TupleDesc;
+import simpledb.storage.TupleIterator;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Knows how to compute some aggregate over a set of IntFields.
@@ -9,6 +18,18 @@ import simpledb.storage.Tuple;
 public class IntegerAggregator implements Aggregator {
 
     private static final long serialVersionUID = 1L;
+    private final int gbfield;
+    private final Type gbfieldtype;
+    private final int afield;
+    private final Op what;
+    private final Map<Field, AggState> groups;
+
+    private static class AggState {
+        int count = 0;
+        int sum = 0;
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+    }
 
     /**
      * Aggregate constructor
@@ -26,7 +47,11 @@ public class IntegerAggregator implements Aggregator {
      */
 
     public IntegerAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
-        // some code goes here
+        this.gbfield = gbfield;
+        this.gbfieldtype = gbfieldtype;
+        this.afield = afield;
+        this.what = what;
+        this.groups = new LinkedHashMap<>();
     }
 
     /**
@@ -37,7 +62,18 @@ public class IntegerAggregator implements Aggregator {
      *            the Tuple containing an aggregate field and a group-by field
      */
     public void mergeTupleIntoGroup(Tuple tup) {
-        // some code goes here
+        Field groupVal = gbfield == NO_GROUPING ? null : tup.getField(gbfield);
+        int aVal = ((IntField) tup.getField(afield)).getValue();
+
+        AggState state = groups.computeIfAbsent(groupVal, k -> new AggState());
+        state.count++;
+        state.sum += aVal;
+        if (aVal < state.min) {
+            state.min = aVal;
+        }
+        if (aVal > state.max) {
+            state.max = aVal;
+        }
     }
 
     /**
@@ -49,9 +85,44 @@ public class IntegerAggregator implements Aggregator {
      *         the constructor.
      */
     public OpIterator iterator() {
-        // some code goes here
-        throw new
-        UnsupportedOperationException("please implement me for lab2");
+        List<Tuple> tuples = new ArrayList<>();
+        TupleDesc td;
+        if (gbfield == NO_GROUPING) {
+            td = new TupleDesc(new Type[]{Type.INT_TYPE});
+        } else {
+            td = new TupleDesc(new Type[]{gbfieldtype, Type.INT_TYPE});
+        }
+
+        for (Map.Entry<Field, AggState> entry : groups.entrySet()) {
+            Tuple t = new Tuple(td);
+            int aggVal = computeAggregate(entry.getValue());
+            if (gbfield == NO_GROUPING) {
+                t.setField(0, new IntField(aggVal));
+            } else {
+                t.setField(0, entry.getKey());
+                t.setField(1, new IntField(aggVal));
+            }
+            tuples.add(t);
+        }
+
+        return new TupleIterator(td, tuples);
+    }
+
+    private int computeAggregate(AggState state) {
+        switch (what) {
+            case MIN:
+                return state.min;
+            case MAX:
+                return state.max;
+            case SUM:
+                return state.sum;
+            case AVG:
+                return state.sum / state.count;
+            case COUNT:
+                return state.count;
+            default:
+                throw new UnsupportedOperationException("unsupported op for lab2: " + what);
+        }
     }
 
 }
