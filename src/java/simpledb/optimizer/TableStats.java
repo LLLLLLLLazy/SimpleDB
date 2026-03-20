@@ -67,6 +67,12 @@ public class TableStats {
      * histograms.
      */
     static final int NUM_HIST_BINS = 100;
+    private final int tableId;
+    private final int ioCostPerPage;
+    private final int numPages;
+    private final int totalTuples;
+    private final Map<Integer, IntHistogram> intHistograms;
+    private final Map<Integer, StringHistogram> stringHistograms;
 
     /**
      * Create a new TableStats object, that keeps track of statistics on each
@@ -86,7 +92,97 @@ public class TableStats {
         // You should try to do this reasonably efficiently, but you don't
         // necessarily have to (for example) do everything
         // in a single scan of the table.
-        // some code goes here
+        this.tableId = tableid;
+        this.ioCostPerPage = ioCostPerPage;
+        this.intHistograms = new HashMap<>();
+        this.stringHistograms = new HashMap<>();
+
+        DbFile file = Database.getCatalog().getDatabaseFile(tableid);
+        TupleDesc td = file.getTupleDesc();
+        int fields = td.numFields();
+
+        int[] mins = new int[fields];
+        int[] maxs = new int[fields];
+        for (int i = 0; i < fields; i++) {
+            mins[i] = Integer.MAX_VALUE;
+            maxs[i] = Integer.MIN_VALUE;
+        }
+
+        int tuples = 0;
+        java.util.HashSet<PageId> pages = new java.util.HashSet<>();
+
+        Transaction firstPassTxn = new Transaction();
+        try {
+            firstPassTxn.start();
+            DbFileIterator it = file.iterator(firstPassTxn.getId());
+            it.open();
+            while (it.hasNext()) {
+                Tuple t = it.next();
+                tuples++;
+                if (t.getRecordId() != null) {
+                    pages.add(t.getRecordId().getPageId());
+                }
+                for (int i = 0; i < fields; i++) {
+                    if (td.getFieldType(i) == Type.INT_TYPE) {
+                        int v = ((IntField) t.getField(i)).getValue();
+                        if (v < mins[i]) {
+                            mins[i] = v;
+                        }
+                        if (v > maxs[i]) {
+                            maxs[i] = v;
+                        }
+                    }
+                }
+            }
+            it.close();
+            firstPassTxn.commit();
+        } catch (Exception e) {
+            try {
+                firstPassTxn.abort();
+            } catch (Exception ignored) {
+            }
+            throw new RuntimeException("failed to scan table for stats", e);
+        }
+
+        this.totalTuples = tuples;
+        this.numPages = pages.size();
+
+        for (int i = 0; i < fields; i++) {
+            if (td.getFieldType(i) == Type.INT_TYPE) {
+                if (mins[i] == Integer.MAX_VALUE) {
+                    mins[i] = 0;
+                    maxs[i] = 0;
+                }
+                intHistograms.put(i, new IntHistogram(NUM_HIST_BINS, mins[i], maxs[i]));
+            } else if (td.getFieldType(i) == Type.STRING_TYPE) {
+                stringHistograms.put(i, new StringHistogram(NUM_HIST_BINS));
+            }
+        }
+
+        Transaction secondPassTxn = new Transaction();
+        try {
+            secondPassTxn.start();
+            DbFileIterator it = file.iterator(secondPassTxn.getId());
+            it.open();
+            while (it.hasNext()) {
+                Tuple t = it.next();
+                for (int i = 0; i < fields; i++) {
+                    if (td.getFieldType(i) == Type.INT_TYPE) {
+                        intHistograms.get(i).addValue(((IntField) t.getField(i)).getValue());
+                    } else if (td.getFieldType(i) == Type.STRING_TYPE) {
+                        stringHistograms.get(i).addValue(((StringField) t.getField(i)).getValue());
+                    }
+                }
+            }
+            it.close();
+            secondPassTxn.commit();
+        } catch (Exception e) {
+            try {
+                secondPassTxn.abort();
+            } catch (Exception ignored) {
+            }
+            throw new RuntimeException("failed to build histograms", e);
+        }
     }
 
     /**
@@ -102,8 +198,7 @@ public class TableStats {
      * @return The estimated cost of scanning the table.
      */
     public double estimateScanCost() {
-        // some code goes here
-        return 0;
+        return (double) numPages * ioCostPerPage;
     }
 
     /**
@@ -116,8 +211,7 @@ public class TableStats {
      *         selectivityFactor
      */
     public int estimateTableCardinality(double selectivityFactor) {
-        // some code goes here
-        return 0;
+        return (int) Math.floor(totalTuples * selectivityFactor);
     }
 
     /**
@@ -131,7 +225,14 @@ public class TableStats {
      * expected selectivity. You may estimate this value from the histograms.
      * */
     public double avgSelectivity(int field, Predicate.Op op) {
-        // some code goes here
+        IntHistogram intHistogram = intHistograms.get(field);
+        if (intHistogram != null) {
+            return intHistogram.avgSelectivity();
+        }
+        StringHistogram stringHistogram = stringHistograms.get(field);
+        if (stringHistogram != null) {
+            return stringHistogram.avgSelectivity();
+        }
         return 1.0;
     }
 
@@ -149,7 +250,14 @@ public class TableStats {
      *         predicate
      */
     public double estimateSelectivity(int field, Predicate.Op op, Field constant) {
-        // some code goes here
+        IntHistogram intHistogram = intHistograms.get(field);
+        if (intHistogram != null) {
+            return intHistogram.estimateSelectivity(op, ((IntField) constant).getValue());
+        }
+        StringHistogram stringHistogram = stringHistograms.get(field);
+        if (stringHistogram != null) {
+            return stringHistogram.estimateSelectivity(op, ((StringField) constant).getValue());
+        }
         return 1.0;
     }
 
@@ -157,8 +265,7 @@ public class TableStats {
      * return the total number of tuples in this table
      * */
     public int totalTuples() {
-        // some code goes here
-        return 0;
+        return totalTuples;
     }
 
 }
